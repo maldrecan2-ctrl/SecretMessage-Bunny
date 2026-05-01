@@ -1,16 +1,18 @@
 // @ts-ignore
 const v = (window as any).vendetta;
 
-// ── Şifreleme Fonksiyonları ────────────────────────────────────────────────
+// ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
 const X2 = "1978";
 
-function toBase64Url(str: string): string {
+function fromBase64Url(str: string): string {
     try {
-        const bytes = new TextEncoder().encode(str);
-        let binary = "";
-        bytes.forEach(b => (binary += String.fromCharCode(b)));
-        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+        let s = str.replace(/-/g, "+").replace(/_/g, "/");
+        while (s.length % 4) s += "=";
+        const binary = atob(s);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new TextDecoder().decode(bytes);
     } catch (e) { return ""; }
 }
 
@@ -22,51 +24,63 @@ function xorEncryptDecrypt(text: string, key: string): string {
     return result;
 }
 
-function encryptMessage(text: string): string {
-    return X1 + toBase64Url(xorEncryptDecrypt(text, X2));
+function decryptMessage(text: string): string {
+    if (!text || typeof text !== "string" || !text.startsWith(X1)) return text;
+    try {
+        const encryptedPart = text.slice(X1.length);
+        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
+    } catch { return text; }
+}
+
+// ── Mesaj Çözme Mantığı ─────────────────────────────────────────────────────
+function handleMessage(event: any) {
+    const msg = event?.message || event?.msg;
+    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
+        if (!msg.content.includes("\n-# (")) {
+            const decrypted = decryptMessage(msg.content);
+            if (decrypted !== msg.content) {
+                msg.content = `${msg.content}\n-# (${decrypted})`;
+            }
+        }
+    }
+}
+
+function handleLoadMessages(event: any) {
+    if (Array.isArray(event?.messages)) {
+        event.messages.forEach((m: any) => {
+            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
+                if (!m.content.includes("\n-# (")) {
+                    const decrypted = decryptMessage(m.content);
+                    if (decrypted !== m.content) {
+                        m.content = `${m.content}\n-# (${decrypted})`;
+                    }
+                }
+            }
+        });
+    }
 }
 
 const patches: any[] = [];
 
 export const onLoad = () => {
     try {
-        if (!v || !v.metro || !v.patcher) return;
-        const { metro, patcher } = v;
+        if (!v || !v.metro) return;
+        const { metro } = v;
 
-        // Mesaj içeriğini şifreleyen yardımcı fonksiyon
-        const processArgs = (args: any) => {
-            for (let i = 0; i < args.length; i++) {
-                let obj = args[i];
-                if (obj && typeof obj.content === "string" && obj.content.startsWith("*")) {
-                    obj.content = encryptMessage(obj.content.slice(1));
-                    return;
-                }
-                if (typeof obj === "string" && obj.startsWith("*")) {
-                    args[i] = encryptMessage(obj.slice(1));
-                    return;
-                }
-            }
-        };
-
-        // 1. Standart Mesaj Gönderme Modülleri
-        const msgModules = [
-            metro.findByProps("sendMessage"),
-            metro.findByProps("editMessage"),
-            metro.findByProps("enqueue")
-        ];
-
-        msgModules.forEach(m => {
-            if (!m) return;
-            // Hem ana modülü hem de default exportu kontrol et
-            const targets = [m, m.default].filter(t => t);
+        // FluxDispatcher'ı en güvenli yoldan bul
+        const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
+        
+        if (FluxDispatcher) {
+            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
             
-            targets.forEach(t => {
-                if (t.sendMessage) patches.push(patcher.before("sendMessage", t, processArgs));
-                if (t.editMessage) patches.push(patcher.before("editMessage", t, processArgs));
-                if (t.enqueue) patches.push(patcher.before("enqueue", t, processArgs));
+            patches.push(() => {
+                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
             });
-        });
-
+        }
     } catch (e) {
         console.error("[SecretMessage] Error:", e);
     }
