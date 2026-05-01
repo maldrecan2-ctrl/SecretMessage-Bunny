@@ -1,5 +1,5 @@
 // @ts-ignore
-const v = (window as any).vendetta;
+const v = (window as any).vendetta || (window as any).bunny;
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -32,22 +32,20 @@ function decryptMessage(text: string): string {
     } catch { return text; }
 }
 
-// ── Mesaj Çözme Mantığı ─────────────────────────────────────────────────────
-function processMessage(msg: any) {
+// ── Mesaj Çözme Mantığı (Klonlama Yöntemi) ──────────────────────────────────
+function processMessage(msg: any): any {
     if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
         if (!msg.content.includes("\n-# (")) {
             const decrypted = decryptMessage(msg.content);
             if (decrypted !== msg.content) {
-                try {
-                    // Mesaj kilitli (frozen) ise hata fırlatabilir, try-catch içinde yapıyoruz
-                    msg.content = `${msg.content}\n-# (${decrypted})`;
-                } catch (e) {
-                    // Eğer kilitliyse yeni bir içerik objesi atamaya çalış (nadiren çalışır ama güvenlidir)
-                    console.error("[SecretMessage] Mesaj kilitli, çözülemedi:", e);
-                }
+                // Orijinal mesajı kopyala (klonla) ve içeriğini değiştir
+                return Object.assign({}, msg, {
+                    content: `${msg.content}\n-# (${decrypted})`
+                });
             }
         }
     }
+    return msg; // Değişiklik yoksa orijinali dön
 }
 
 const patches: any[] = [];
@@ -62,30 +60,33 @@ export default {
             const Messages = metro.findByProps("receiveMessage");
             if (Messages && Messages.receiveMessage) {
                 patches.push(patcher.before("receiveMessage", Messages, (args: any) => {
-                    // args[0] channelId, args[1] message object
+                    // args[0] = channelId, args[1] = message object
                     if (args && args[1]) {
-                        processMessage(args[1]);
+                        args[1] = processMessage(args[1]);
                     }
                 }));
             }
 
-            // 2. YÖNTEM: FluxDispatcher (Geçmiş mesajlar ve alternatif yakalama)
+            // 2. YÖNTEM: Dispatcher Yakalama (Garantici yöntem)
             const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
-            if (FluxDispatcher) {
-                const handleMessage = (event: any) => processMessage(event?.message || event?.msg);
-                const handleLoad = (event: any) => {
-                    if (Array.isArray(event?.messages)) event.messages.forEach(processMessage);
-                };
+            if (FluxDispatcher && FluxDispatcher.dispatch) {
+                // Dispatch fonksiyonunu yamala (tüm Discord olayları buradan geçer)
+                patches.push(patcher.before("dispatch", FluxDispatcher, (args: any) => {
+                    const event = args[0];
+                    if (!event) return;
 
-                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoad);
-                
-                patches.push(() => {
-                    FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
-                    FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
-                    FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoad);
-                });
+                    if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
+                        if (event.message) {
+                            event.message = processMessage(event.message);
+                        }
+                    } else if (event.type === "LOAD_MESSAGES_SUCCESS") {
+                        if (Array.isArray(event.messages)) {
+                            for (let i = 0; i < event.messages.length; i++) {
+                                event.messages[i] = processMessage(event.messages[i]);
+                            }
+                        }
+                    }
+                }));
             }
         } catch (e) {
             console.error("[SecretMessage] onLoad Error:", e);
