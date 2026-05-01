@@ -32,23 +32,19 @@ function decryptMessage(text: string): string {
     } catch { return text; }
 }
 
-// ── Mesaj Çözme Mantığı (Klonlama Yöntemi) ──────────────────────────────────
-function processMessage(msg: any): any {
-    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
-        if (!msg.content.includes("\n-# (")) {
-            const decrypted = decryptMessage(msg.content);
-            if (decrypted !== msg.content) {
-                // Orijinal mesajı kopyala (klonla) ve içeriğini değiştir
-                return Object.assign({}, msg, {
-                    content: `${msg.content}\n-# (${decrypted})`
-                });
+const patches: any[] = [];
+
+function mutateRawMessage(payload: any) {
+    if (payload && typeof payload.content === "string" && payload.content.startsWith(X1)) {
+        if (!payload.content.includes("\n-# (")) {
+            const decrypted = decryptMessage(payload.content);
+            if (decrypted !== payload.content) {
+                // Burada payload henüz kilitli değildir, güvenle değiştirebiliriz
+                payload.content = `${payload.content}\n-# (${decrypted})`;
             }
         }
     }
-    return msg; // Değişiklik yoksa orijinali dön
 }
-
-const patches: any[] = [];
 
 export default {
     onLoad: () => {
@@ -56,38 +52,44 @@ export default {
             if (!v || !v.metro || !v.patcher) return;
             const { metro, patcher } = v;
 
-            // 1. YÖNTEM: Mesajlar cihaza inerken (receiveMessage) yakala
-            const Messages = metro.findByProps("receiveMessage");
-            if (Messages && Messages.receiveMessage) {
-                patches.push(patcher.before("receiveMessage", Messages, (args: any) => {
-                    // args[0] = channelId, args[1] = message object
-                    if (args && args[1]) {
-                        args[1] = processMessage(args[1]);
-                    }
-                }));
+            // 1. YÖNTEM: Mesajın ilk yaratılış anı (MessageRecord Creation)
+            const MessageRecordUtils = metro.findByProps("updateMessageRecord", "createMessageRecord");
+            if (MessageRecordUtils) {
+                if (MessageRecordUtils.createMessageRecord) {
+                    patches.push(patcher.before("createMessageRecord", MessageRecordUtils, (args: any) => {
+                        // args[0] mesajın ham JSON (API) verisidir
+                        if (args && args[0]) mutateRawMessage(args[0]);
+                    }));
+                }
+                
+                if (MessageRecordUtils.updateMessageRecord) {
+                    patches.push(patcher.before("updateMessageRecord", MessageRecordUtils, (args: any) => {
+                        // args[1] genelde yeni payload objesidir
+                        if (args && args[1]) mutateRawMessage(args[1]);
+                        if (args && args[0]) mutateRawMessage(args[0]);
+                    }));
+                }
             }
 
-            // 2. YÖNTEM: Dispatcher Yakalama (Garantici yöntem)
-            const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
-            if (FluxDispatcher && FluxDispatcher.dispatch) {
-                // Dispatch fonksiyonunu yamala (tüm Discord olayları buradan geçer)
-                patches.push(patcher.before("dispatch", FluxDispatcher, (args: any) => {
-                    const event = args[0];
-                    if (!event) return;
-
-                    if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
-                        if (event.message) {
-                            event.message = processMessage(event.message);
-                        }
-                    } else if (event.type === "LOAD_MESSAGES_SUCCESS") {
-                        if (Array.isArray(event.messages)) {
-                            for (let i = 0; i < event.messages.length; i++) {
-                                event.messages[i] = processMessage(event.messages[i]);
+            // 2. YÖNTEM: Store'dan direkt çekilirken (getMessage) kilitli olsa bile klonlayarak aşma
+            const MessageStore = metro.findByProps("getMessage", "getMessages");
+            if (MessageStore) {
+                patches.push(patcher.after("getMessage", MessageStore, (args: any, res: any) => {
+                    if (res && typeof res.content === "string" && res.content.startsWith(X1)) {
+                        if (!res.content.includes("\n-# (")) {
+                            const decrypted = decryptMessage(res.content);
+                            if (decrypted !== res.content) {
+                                // Objeyi klonla ki "kilitli (frozen)" hatasına takılmayalım
+                                return Object.assign({}, res, {
+                                    content: `${res.content}\n-# (${decrypted})`
+                                });
                             }
                         }
                     }
+                    return res;
                 }));
             }
+
         } catch (e) {
             console.error("[SecretMessage] onLoad Error:", e);
         }
