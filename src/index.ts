@@ -1,7 +1,6 @@
-// @ts-ignore
-const { metro, patcher, FluxDispatcher } = (window as any).vendetta;
-const { before } = patcher;
-const { findByProps } = metro;
+import { findByProps } from "@vendetta/metro";
+import { before } from "@vendetta/patcher";
+import { storage } from "@vendetta/plugin";
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -51,6 +50,7 @@ function decryptMessage(text: string): string {
 }
 
 const patches: any[] = [];
+let FluxDispatcher: any = null;
 
 function handleMessage(event: any) {
     const msg = event?.message;
@@ -79,41 +79,48 @@ function handleLoadMessages(event: any) {
     }
 }
 
-export default {
-    onLoad: () => {
-        try {
-            const Messages = findByProps("sendMessage", "receiveMessage");
-            if (Messages) {
-                patches.push(before("sendMessage", Messages, (args) => {
-                    const content = args[1]?.content;
-                    if (typeof content === "string" && content.startsWith("*")) {
-                        args[1].content = encryptMessage(content.slice(1));
-                    }
-                }));
-                patches.push(before("editMessage", Messages, (args) => {
-                    const content = args[2]?.content;
-                    if (typeof content === "string" && content.startsWith("*")) {
-                        args[2].content = encryptMessage(content.slice(1));
-                    }
-                }));
-            }
+export const onLoad = () => {
+    try {
+        if (storage.autoDecrypt === undefined) storage.autoDecrypt = true;
 
-            if (FluxDispatcher) {
-                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            }
-        } catch (e) {
-            console.error("[SecretMessage] Error during onLoad:", e);
+        // Mesaj Gönderme Yaması
+        const Messages = findByProps("sendMessage", "receiveMessage");
+        if (Messages) {
+            patches.push(before("sendMessage", Messages, (args) => {
+                const content = args[1]?.content;
+                if (typeof content === "string" && content.startsWith("*")) {
+                    args[1].content = encryptMessage(content.slice(1));
+                }
+            }));
+            patches.push(before("editMessage", Messages, (args) => {
+                const content = args[2]?.content;
+                if (typeof content === "string" && content.startsWith("*")) {
+                    args[2].content = encryptMessage(content.slice(1));
+                }
+            }));
         }
-    },
 
-    onUnload: () => {
+        // FluxDispatcher Bulma ve Abone Olma
+        FluxDispatcher = findByProps("dispatch", "subscribe");
+        if (FluxDispatcher) {
+            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+        }
+    } catch (e) {
+        console.error("[SecretMessage] onLoad Error:", e);
+    }
+};
+
+export const onUnload = () => {
+    try {
         for (const unpatch of patches) unpatch?.();
         if (FluxDispatcher) {
             FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
             FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
             FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
         }
+    } catch (e) {
+        console.error("[SecretMessage] onUnload Error:", e);
     }
 };
