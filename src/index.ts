@@ -14,6 +14,17 @@ function toBase64Url(str: string): string {
     } catch (e) { return ""; }
 }
 
+function fromBase64Url(str: string): string {
+    try {
+        let s = str.replace(/-/g, "+").replace(/_/g, "/");
+        while (s.length % 4) s += "=";
+        const binary = atob(s);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new TextDecoder().decode(bytes);
+    } catch (e) { return ""; }
+}
+
 function xorEncryptDecrypt(text: string, key: string): string {
     let result = "";
     for (let i = 0; i < text.length; i++) {
@@ -26,29 +37,93 @@ function encryptMessage(text: string): string {
     return X1 + toBase64Url(xorEncryptDecrypt(text, X2));
 }
 
+function decryptMessage(text: string): string {
+    if (!text || typeof text !== "string" || !text.startsWith(X1)) return text;
+    try {
+        const encryptedPart = text.slice(X1.length);
+        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
+    } catch { return text; }
+}
+
 const patches: any[] = [];
+
+// ── Mesaj Çözme Mantığı ─────────────────────────────────────────────────────
+function handleMessage(event: any) {
+    const msg = event?.message;
+    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
+        if (!msg.content.includes("\n-# (")) {
+            const decrypted = decryptMessage(msg.content);
+            if (decrypted !== msg.content) {
+                msg.content = `${msg.content}\n-# (${decrypted})`;
+            }
+        }
+    }
+}
+
+function handleLoadMessages(event: any) {
+    if (Array.isArray(event?.messages)) {
+        event.messages.forEach((m: any) => {
+            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
+                if (!m.content.includes("\n-# (")) {
+                    const decrypted = decryptMessage(m.content);
+                    if (decrypted !== m.content) {
+                        m.content = `${m.content}\n-# (${decrypted})`;
+                    }
+                }
+            }
+        });
+    }
+}
 
 export const onLoad = () => {
     try {
         if (!v) return;
-
-        // Modülleri Bunny'nin içinden direkt al
         const { metro, patcher } = v;
         if (!metro || !patcher) return;
 
-        const Messages = metro.findByProps("sendMessage", "receiveMessage");
-        if (Messages) {
-            patches.push(patcher.before("sendMessage", Messages, (args: any) => {
-                const content = args[1]?.content || args[1];
-                if (typeof content === "string" && content.startsWith("*")) {
-                    if (typeof args[1] === "string") {
-                        args[1] = encryptMessage(content.slice(1));
-                    } else {
-                        args[1].content = encryptMessage(content.slice(1));
+        // ── MESAJ GÖNDERME YAMALARI (AĞ ATMA) ──
+        const sendMessageProps = ["sendMessage", "receiveMessage", "sendBotMessage", "sendClydeError"];
+        
+        // Olası tüm mesaj modüllerini bul ve yamala
+        const modules = [
+            metro.findByProps("sendMessage", "receiveMessage"),
+            metro.findByProps("sendMessage", "sendBotMessage"),
+            metro.findByProps("sendMessage", "editMessage")
+        ];
+
+        modules.forEach(m => {
+            if (m && m.sendMessage) {
+                patches.push(patcher.before("sendMessage", m, (args: any) => {
+                    const messageObj = args[1];
+                    if (!messageObj) return;
+
+                    const content = typeof messageObj === "string" ? messageObj : messageObj.content;
+                    if (typeof content === "string" && content.startsWith("*")) {
+                        const encrypted = encryptMessage(content.slice(1));
+                        if (typeof messageObj === "string") {
+                            args[1] = encrypted;
+                        } else {
+                            messageObj.content = encrypted;
+                        }
                     }
-                }
-            }));
+                }));
+            }
+        });
+
+        // ── MESAJ ÇÖZME YAMALARI ──
+        const FluxDispatcher = metro.findByProps("dispatch", "subscribe");
+        if (FluxDispatcher) {
+            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            
+            patches.push(() => {
+                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            });
         }
+
     } catch (e) {
         console.error("[SecretMessage] Error:", e);
     }
@@ -56,7 +131,9 @@ export const onLoad = () => {
 
 export const onUnload = () => {
     try {
-        for (const unpatch of patches) unpatch();
+        for (const unpatch of patches) {
+            if (typeof unpatch === "function") unpatch();
+        }
         patches.length = 0;
     } catch (e) {}
 };
