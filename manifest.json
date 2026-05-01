@@ -1,7 +1,7 @@
 {
    "name": "SecretMessage",
    "description": "Vencord ile uyumlu gizli mesajlaşma eklentisi.",
-   "version": "1.0.6",
+   "version": "1.0.7",
    "authors": [
       {
          "name": "rolex7exe",
