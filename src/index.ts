@@ -1,7 +1,7 @@
-import { findByProps } from "@vendetta/metro";
-import { FluxDispatcher } from "@vendetta/metro/common";
-import { before } from "@vendetta/patcher";
-import { storage } from "@vendetta/plugin";
+// @ts-ignore
+const { metro, patcher, FluxDispatcher } = (window as any).vendetta;
+const { before } = patcher;
+const { findByProps } = metro;
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -18,9 +18,9 @@ function toBase64Url(str: string): string {
 
 function fromBase64Url(str: string): string {
     try {
-        str = str.replace(/-/g, "+").replace(/_/g, "/");
-        while (str.length % 4) str += "=";
-        const binary = atob(str);
+        let s = str.replace(/-/g, "+").replace(/_/g, "/");
+        while (s.length % 4) s += "=";
+        const binary = atob(s);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
         return new TextDecoder().decode(bytes);
@@ -53,7 +53,6 @@ function decryptMessage(text: string): string {
 const patches: any[] = [];
 
 function handleMessage(event: any) {
-    if (storage.autoDecrypt === false) return;
     const msg = event?.message;
     if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
         if (!msg.content.includes("\n-# (")) {
@@ -66,7 +65,6 @@ function handleMessage(event: any) {
 }
 
 function handleLoadMessages(event: any) {
-    if (storage.autoDecrypt === false) return;
     if (Array.isArray(event?.messages)) {
         event.messages.forEach((m: any) => {
             if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
@@ -83,8 +81,6 @@ function handleLoadMessages(event: any) {
 
 export default {
     onLoad: () => {
-        if (storage.autoDecrypt === undefined) storage.autoDecrypt = true;
-
         try {
             const Messages = findByProps("sendMessage", "receiveMessage");
             if (Messages) {
@@ -102,9 +98,11 @@ export default {
                 }));
             }
 
-            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            if (FluxDispatcher) {
+                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            }
         } catch (e) {
             console.error("[SecretMessage] Error during onLoad:", e);
         }
@@ -112,9 +110,10 @@ export default {
 
     onUnload: () => {
         for (const unpatch of patches) unpatch?.();
-        FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
-        FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
-        FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+        if (FluxDispatcher) {
+            FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+        }
     }
 };
-
