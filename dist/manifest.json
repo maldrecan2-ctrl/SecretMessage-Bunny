@@ -1,0 +1,12 @@
+{
+   "name": "SecretMessage",
+   "description": "Vencord ile uyumlu gizli mesajlaşma eklentisi.",
+   "authors": [
+      {
+         "name": "rolex7exe",
+         "id": "460344197849808897"
+      }
+   ],
+   "main": "index.js",
+   "hash": "auto"
+}
