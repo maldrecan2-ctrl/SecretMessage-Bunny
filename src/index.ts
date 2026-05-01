@@ -1,6 +1,12 @@
-import { findByProps } from "@vendetta/metro";
-import { before } from "@vendetta/patcher";
-import { storage } from "@vendetta/plugin";
+// Bunny / Vendetta Global API
+const v = (window as any).vendetta;
+const { metro, patcher, plugin } = v;
+const { findByProps } = metro;
+const { before } = patcher;
+const { storage } = plugin;
+
+// FluxDispatcher'ı bul
+const FluxDispatcher = findByProps("dispatch", "subscribe");
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -50,9 +56,9 @@ function decryptMessage(text: string): string {
 }
 
 const patches: any[] = [];
-let FluxDispatcher: any = null;
 
 function handleMessage(event: any) {
+    if (storage.autoDecrypt === false) return;
     const msg = event?.message;
     if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
         if (!msg.content.includes("\n-# (")) {
@@ -65,6 +71,7 @@ function handleMessage(event: any) {
 }
 
 function handleLoadMessages(event: any) {
+    if (storage.autoDecrypt === false) return;
     if (Array.isArray(event?.messages)) {
         event.messages.forEach((m: any) => {
             if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
@@ -79,48 +86,46 @@ function handleLoadMessages(event: any) {
     }
 }
 
-export const onLoad = () => {
-    try {
+// ── Plugin Export ───────────────────────────────────────────────────────────
+export default {
+    onLoad: () => {
         if (storage.autoDecrypt === undefined) storage.autoDecrypt = true;
 
-        // Mesaj Gönderme Yaması
-        const Messages = findByProps("sendMessage", "receiveMessage");
-        if (Messages) {
-            patches.push(before("sendMessage", Messages, (args) => {
-                const content = args[1]?.content;
-                if (typeof content === "string" && content.startsWith("*")) {
-                    args[1].content = encryptMessage(content.slice(1));
-                }
-            }));
-            patches.push(before("editMessage", Messages, (args) => {
-                const content = args[2]?.content;
-                if (typeof content === "string" && content.startsWith("*")) {
-                    args[2].content = encryptMessage(content.slice(1));
-                }
-            }));
-        }
+        try {
+            const Messages = findByProps("sendMessage", "receiveMessage");
+            if (Messages) {
+                patches.push(before("sendMessage", Messages, (args) => {
+                    const content = args[1]?.content;
+                    if (typeof content === "string" && content.startsWith("*")) {
+                        args[1].content = encryptMessage(content.slice(1));
+                    }
+                }));
+            }
 
-        // FluxDispatcher Bulma ve Abone Olma
-        FluxDispatcher = findByProps("dispatch", "subscribe");
-        if (FluxDispatcher) {
-            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            if (FluxDispatcher) {
+                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            }
+        } catch (e) {
+            console.error("[SecretMessage] Error:", e);
         }
-    } catch (e) {
-        console.error("[SecretMessage] onLoad Error:", e);
-    }
-};
+    },
 
-export const onUnload = () => {
-    try {
+    onUnload: () => {
         for (const unpatch of patches) unpatch?.();
         if (FluxDispatcher) {
             FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
             FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
             FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
         }
-    } catch (e) {
-        console.error("[SecretMessage] onUnload Error:", e);
+    },
+
+    settings: {
+        autoDecrypt: {
+            label: "Otomatik Çeviri",
+            type: "toggle",
+            default: true
+        }
     }
 };
