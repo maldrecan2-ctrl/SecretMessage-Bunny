@@ -1,7 +1,7 @@
 // @ts-ignore
 const v = (window as any).vendetta;
 
-// ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
+// ── Şifreleme Fonksiyonları ────────────────────────────────────────────────
 const X1 = "krd";
 const X2 = "1978";
 
@@ -11,17 +11,6 @@ function toBase64Url(str: string): string {
         let binary = "";
         bytes.forEach(b => (binary += String.fromCharCode(b)));
         return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-    } catch (e) { return ""; }
-}
-
-function fromBase64Url(str: string): string {
-    try {
-        let s = str.replace(/-/g, "+").replace(/_/g, "/");
-        while (s.length % 4) s += "=";
-        const binary = atob(s);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return new TextDecoder().decode(bytes);
     } catch (e) { return ""; }
 }
 
@@ -37,91 +26,30 @@ function encryptMessage(text: string): string {
     return X1 + toBase64Url(xorEncryptDecrypt(text, X2));
 }
 
-function decryptMessage(text: string): string {
-    if (!text || typeof text !== "string" || !text.startsWith(X1)) return text;
-    try {
-        const encryptedPart = text.slice(X1.length);
-        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
-    } catch { return text; }
-}
-
 const patches: any[] = [];
-
-// ── Mesaj Çözme Mantığı ─────────────────────────────────────────────────────
-function handleMessage(event: any) {
-    const msg = event?.message;
-    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
-        if (!msg.content.includes("\n-# (")) {
-            const decrypted = decryptMessage(msg.content);
-            if (decrypted !== msg.content) {
-                msg.content = `${msg.content}\n-# (${decrypted})`;
-            }
-        }
-    }
-}
-
-function handleLoadMessages(event: any) {
-    if (Array.isArray(event?.messages)) {
-        event.messages.forEach((m: any) => {
-            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
-                if (!m.content.includes("\n-# (")) {
-                    const decrypted = decryptMessage(m.content);
-                    if (decrypted !== m.content) {
-                        m.content = `${m.content}\n-# (${decrypted})`;
-                    }
-                }
-            }
-        });
-    }
-}
 
 export const onLoad = () => {
     try {
-        if (!v) return;
+        if (!v || !v.metro || !v.patcher) return;
         const { metro, patcher } = v;
-        if (!metro || !patcher) return;
 
-        // ── MESAJ GÖNDERME YAMALARI (AĞ ATMA) ──
-        const sendMessageProps = ["sendMessage", "receiveMessage", "sendBotMessage", "sendClydeError"];
+        // Mesaj gönderme fonksiyonlarını bul
+        const Messages = metro.findByProps("sendMessage", "receiveMessage");
         
-        // Olası tüm mesaj modüllerini bul ve yamala
-        const modules = [
-            metro.findByProps("sendMessage", "receiveMessage"),
-            metro.findByProps("sendMessage", "sendBotMessage"),
-            metro.findByProps("sendMessage", "editMessage")
-        ];
-
-        modules.forEach(m => {
-            if (m && m.sendMessage) {
-                patches.push(patcher.before("sendMessage", m, (args: any) => {
-                    const messageObj = args[1];
-                    if (!messageObj) return;
-
-                    const content = typeof messageObj === "string" ? messageObj : messageObj.content;
-                    if (typeof content === "string" && content.startsWith("*")) {
-                        const encrypted = encryptMessage(content.slice(1));
-                        if (typeof messageObj === "string") {
-                            args[1] = encrypted;
-                        } else {
-                            messageObj.content = encrypted;
-                        }
+        if (Messages && Messages.sendMessage) {
+            patches.push(patcher.before("sendMessage", Messages, (args: any) => {
+                // args[1] genellikle mesaj objesidir
+                if (args[1] && typeof args[1].content === "string") {
+                    if (args[1].content.startsWith("*")) {
+                        args[1].content = encryptMessage(args[1].content.slice(1));
                     }
-                }));
-            }
-        });
-
-        // ── MESAJ ÇÖZME YAMALARI ──
-        const FluxDispatcher = metro.findByProps("dispatch", "subscribe");
-        if (FluxDispatcher) {
-            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            
-            patches.push(() => {
-                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
-                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
-                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            });
+                } else if (typeof args[1] === "string") {
+                    // Bazı sürümlerde direkt string olarak gelebilir
+                    if (args[1].startsWith("*")) {
+                        args[1] = encryptMessage(args[1].slice(1));
+                    }
+                }
+            }));
         }
 
     } catch (e) {
