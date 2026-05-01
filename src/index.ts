@@ -3,24 +3,28 @@ import { FluxDispatcher } from "@vendetta/metro/common";
 import { before } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 
-// ── Şifreleme Sabitleri (Vencord ile aynı) ──────────────────────────────────
+// ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
 const X2 = "1978";
 
 function toBase64Url(str: string): string {
-    const bytes = new TextEncoder().encode(str);
-    let binary = "";
-    bytes.forEach(b => (binary += String.fromCharCode(b)));
-    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+    try {
+        const bytes = new TextEncoder().encode(str);
+        let binary = "";
+        bytes.forEach(b => (binary += String.fromCharCode(b)));
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+    } catch (e) { return ""; }
 }
 
 function fromBase64Url(str: string): string {
-    str = str.replace(/-/g, "+").replace(/_/g, "/");
-    while (str.length % 4) str += "=";
-    const binary = atob(str);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
+    try {
+        str = str.replace(/-/g, "+").replace(/_/g, "/");
+        while (str.length % 4) str += "=";
+        const binary = atob(str);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new TextDecoder().decode(bytes);
+    } catch (e) { return ""; }
 }
 
 function xorEncryptDecrypt(text: string, key: string): string {
@@ -38,20 +42,20 @@ function encryptMessage(text: string): string {
 function decryptMessage(text: string): string {
     if (!text.startsWith(X1)) return text;
     try {
-        return xorEncryptDecrypt(fromBase64Url(text.slice(X1.length)), X2);
+        const encryptedPart = text.slice(X1.length);
+        if (!encryptedPart) return text;
+        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
     } catch {
         return text;
     }
 }
 
-// ── Yama dizisi ─────────────────────────────────────────────────────────────
-const patches: (() => void)[] = [];
+const patches: any[] = [];
 
-// ── Gelen mesajları işle ────────────────────────────────────────────────────
 function handleMessage(event: any) {
-    if (!storage.autoDecrypt) return;
+    if (storage.autoDecrypt === false) return;
     const msg = event?.message;
-    if (msg && typeof msg.content === "string") {
+    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
         if (!msg.content.includes("\n-# (")) {
             const decrypted = decryptMessage(msg.content);
             if (decrypted !== msg.content) {
@@ -62,10 +66,10 @@ function handleMessage(event: any) {
 }
 
 function handleLoadMessages(event: any) {
-    if (!storage.autoDecrypt) return;
+    if (storage.autoDecrypt === false) return;
     if (Array.isArray(event?.messages)) {
         event.messages.forEach((m: any) => {
-            if (m && typeof m.content === "string") {
+            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
                 if (!m.content.includes("\n-# (")) {
                     const decrypted = decryptMessage(m.content);
                     if (decrypted !== m.content) {
@@ -77,55 +81,40 @@ function handleLoadMessages(event: any) {
     }
 }
 
-// ── Plugin giriş noktası ────────────────────────────────────────────────────
 export default {
-    onLoad() {
-        // Varsayılan ayar
+    onLoad: () => {
         if (storage.autoDecrypt === undefined) storage.autoDecrypt = true;
 
-        // Gönderilen mesajlara şifreleme (başında * varsa)
-        const Messages = findByProps("sendMessage", "receiveMessage");
-        if (Messages) {
-            patches.push(
-                before("sendMessage", Messages, (args: any[]) => {
-                    if (args[1] && typeof args[1].content === "string") {
-                        if (args[1].content.startsWith("*")) {
-                            args[1].content = encryptMessage(args[1].content.slice(1));
-                        }
+        try {
+            const Messages = findByProps("sendMessage", "receiveMessage");
+            if (Messages) {
+                patches.push(before("sendMessage", Messages, (args) => {
+                    const content = args[1]?.content;
+                    if (typeof content === "string" && content.startsWith("*")) {
+                        args[1].content = encryptMessage(content.slice(1));
                     }
-                })
-            );
-            patches.push(
-                before("editMessage", Messages, (args: any[]) => {
-                    if (args[2] && typeof args[2].content === "string") {
-                        if (args[2].content.startsWith("*")) {
-                            args[2].content = encryptMessage(args[2].content.slice(1));
-                        }
+                }));
+                patches.push(before("editMessage", Messages, (args) => {
+                    const content = args[2]?.content;
+                    if (typeof content === "string" && content.startsWith("*")) {
+                        args[2].content = encryptMessage(content.slice(1));
                     }
-                })
-            );
-        }
+                }));
+            }
 
-        // Gelen mesajları çözme (FluxDispatcher)
-        FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-        FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-        FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+        } catch (e) {
+            console.error("[SecretMessage] Error during onLoad:", e);
+        }
     },
 
-    onUnload() {
-        patches.forEach(p => p());
-        patches.length = 0;
+    onUnload: () => {
+        for (const unpatch of patches) unpatch?.();
         FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
         FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
         FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-    },
-
-    settings: {
-        autoDecrypt: {
-            label: "Gelen Mesajları Otomatik Çevir",
-            description: 'Açık olduğunda "krd" ile başlayan mesajlar otomatik çevrilir.',
-            type: "toggle",
-            default: true,
-        },
-    },
+    }
 };
+
