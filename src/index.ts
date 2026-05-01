@@ -33,24 +33,36 @@ export const onLoad = () => {
         if (!v || !v.metro || !v.patcher) return;
         const { metro, patcher } = v;
 
-        // Mesaj gönderme fonksiyonlarını bul
-        const Messages = metro.findByProps("sendMessage", "receiveMessage");
-        
-        if (Messages && Messages.sendMessage) {
-            patches.push(patcher.before("sendMessage", Messages, (args: any) => {
-                // args[1] genellikle mesaj objesidir
-                if (args[1] && typeof args[1].content === "string") {
-                    if (args[1].content.startsWith("*")) {
-                        args[1].content = encryptMessage(args[1].content.slice(1));
-                    }
-                } else if (typeof args[1] === "string") {
-                    // Bazı sürümlerde direkt string olarak gelebilir
-                    if (args[1].startsWith("*")) {
-                        args[1] = encryptMessage(args[1].slice(1));
+        // Mesaj gönderme ile ilgili tüm olası modülleri bul
+        const modules = [
+            metro.findByProps("sendMessage", "receiveMessage"),
+            metro.findByProps("sendMessage", "sendBotMessage"),
+            metro.findByProps("uploadFiles", "sendMessage")
+        ];
+
+        const doPatch = (m: any) => {
+            if (!m || !m.sendMessage) return;
+            
+            patches.push(patcher.before("sendMessage", m, (args: any) => {
+                // args[1] her zaman mesaj içeriğini barındıran yerdir
+                let messageObj = args[1];
+                if (!messageObj) return;
+
+                const content = typeof messageObj === "string" ? messageObj : messageObj.content;
+                
+                if (typeof content === "string" && content.startsWith("*")) {
+                    const encrypted = encryptMessage(content.slice(1));
+                    if (typeof messageObj === "string") {
+                        args[1] = encrypted;
+                    } else {
+                        messageObj.content = encrypted;
                     }
                 }
             }));
-        }
+        };
+
+        // Bulunan tüm modülleri aynı anda yamala
+        modules.forEach(doPatch);
 
     } catch (e) {
         console.error("[SecretMessage] Error:", e);
