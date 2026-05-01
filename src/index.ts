@@ -1,7 +1,7 @@
 import { findByProps } from "@vendetta/metro";
 import { before } from "@vendetta/patcher";
 
-// ── Şifreleme Fonksiyonları ────────────────────────────────────────────────
+// ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
 const X2 = "1978";
 
@@ -11,6 +11,17 @@ function toBase64Url(str: string): string {
         let binary = "";
         bytes.forEach(b => (binary += String.fromCharCode(b)));
         return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+    } catch (e) { return ""; }
+}
+
+function fromBase64Url(str: string): string {
+    try {
+        let s = str.replace(/-/g, "+").replace(/_/g, "/");
+        while (s.length % 4) s += "=";
+        const binary = atob(s);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new TextDecoder().decode(bytes);
     } catch (e) { return ""; }
 }
 
@@ -26,11 +37,49 @@ function encryptMessage(text: string): string {
     return X1 + toBase64Url(xorEncryptDecrypt(text, X2));
 }
 
+function decryptMessage(text: string): string {
+    if (!text || typeof text !== "string" || !text.startsWith(X1)) return text;
+    try {
+        const encryptedPart = text.slice(X1.length);
+        if (!encryptedPart) return text;
+        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
+    } catch {
+        return text;
+    }
+}
+
 const patches: any[] = [];
+
+function handleMessage(event: any) {
+    const msg = event?.message;
+    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
+        if (!msg.content.includes("\n-# (")) {
+            const decrypted = decryptMessage(msg.content);
+            if (decrypted !== msg.content) {
+                msg.content = `${msg.content}\n-# (${decrypted})`;
+            }
+        }
+    }
+}
+
+function handleLoadMessages(event: any) {
+    if (Array.isArray(event?.messages)) {
+        event.messages.forEach((m: any) => {
+            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
+                if (!m.content.includes("\n-# (")) {
+                    const decrypted = decryptMessage(m.content);
+                    if (decrypted !== m.content) {
+                        m.content = `${m.content}\n-# (${decrypted})`;
+                    }
+                }
+            }
+        });
+    }
+}
 
 export const onLoad = () => {
     try {
-        // Mesaj Gönderme Yaması
+        // Mesaj Gönderme ve Düzenleme Yaması
         const Messages = findByProps("sendMessage", "receiveMessage");
         if (Messages) {
             patches.push(before("sendMessage", Messages, (args) => {
@@ -39,14 +88,36 @@ export const onLoad = () => {
                     args[1].content = encryptMessage(content.slice(1));
                 }
             }));
+            patches.push(before("editMessage", Messages, (args) => {
+                const content = args[2]?.content;
+                if (typeof content === "string" && content.startsWith("*")) {
+                    args[2].content = encryptMessage(content.slice(1));
+                }
+            }));
+        }
+
+        // Gelen Mesajları Çözme (FluxDispatcher)
+        const FluxDispatcher = findByProps("dispatch", "subscribe");
+        if (FluxDispatcher) {
+            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            
+            // Unsubscribe fonksiyonunu patches'e ekle
+            patches.push(() => {
+                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+            });
         }
     } catch (e) {
-        console.error("[SecretMessage] onLoad Error:", e);
+        console.error("[SecretMessage] Error:", e);
     }
 };
 
 export const onUnload = () => {
-    try {
-        for (const unpatch of patches) unpatch?.();
-    } catch (e) {}
+    for (const unpatch of patches) {
+        try { unpatch(); } catch (e) {}
+    }
+    patches.length = 0;
 };
