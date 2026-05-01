@@ -1,5 +1,5 @@
-import { findByProps } from "@vendetta/metro";
-import { before } from "@vendetta/patcher";
+// @ts-ignore
+const v = (window as any).vendetta;
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -30,36 +30,33 @@ const patches: any[] = [];
 
 export const onLoad = () => {
     try {
-        // En yaygın mesaj gönderme modülleri
-        const Messages = findByProps("sendMessage", "receiveMessage");
-        const MessageActions = findByProps("sendBotMessage", "sendMessage");
-        
-        const patchSendMessage = (module: any) => {
-            if (module) {
-                patches.push(before("sendMessage", module, (args) => {
-                    const content = args[1]?.content || args[1];
-                    if (typeof content === "string" && content.startsWith("*")) {
-                        if (typeof args[1] === "string") {
-                            args[1] = encryptMessage(content.slice(1));
-                        } else {
-                            args[1].content = encryptMessage(content.slice(1));
-                        }
+        if (!v) return;
+
+        // Modülleri Bunny'nin içinden direkt al
+        const { metro, patcher } = v;
+        if (!metro || !patcher) return;
+
+        const Messages = metro.findByProps("sendMessage", "receiveMessage");
+        if (Messages) {
+            patches.push(patcher.before("sendMessage", Messages, (args: any) => {
+                const content = args[1]?.content || args[1];
+                if (typeof content === "string" && content.startsWith("*")) {
+                    if (typeof args[1] === "string") {
+                        args[1] = encryptMessage(content.slice(1));
+                    } else {
+                        args[1].content = encryptMessage(content.slice(1));
                     }
-                }));
-            }
-        };
-
-        patchSendMessage(Messages);
-        patchSendMessage(MessageActions);
-
+                }
+            }));
+        }
     } catch (e) {
-        console.error("[SecretMessage] onLoad Error:", e);
+        console.error("[SecretMessage] Error:", e);
     }
 };
 
 export const onUnload = () => {
     try {
-        for (const unpatch of patches) unpatch?.();
+        for (const unpatch of patches) unpatch();
         patches.length = 0;
     } catch (e) {}
 };
