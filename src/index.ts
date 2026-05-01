@@ -33,8 +33,7 @@ function decryptMessage(text: string): string {
 }
 
 // ── Mesaj Çözme Mantığı ─────────────────────────────────────────────────────
-function handleMessage(event: any) {
-    const msg = event?.message || event?.msg;
+function processMessage(msg: any) {
     if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
         if (!msg.content.includes("\n-# (")) {
             const decrypted = decryptMessage(msg.content);
@@ -45,52 +44,71 @@ function handleMessage(event: any) {
     }
 }
 
+function handleMessageEvent(event: any) {
+    const msg = event?.message || event?.msg;
+    processMessage(msg);
+}
+
 function handleLoadMessages(event: any) {
     if (Array.isArray(event?.messages)) {
-        event.messages.forEach((m: any) => {
-            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
-                if (!m.content.includes("\n-# (")) {
-                    const decrypted = decryptMessage(m.content);
-                    if (decrypted !== m.content) {
-                        m.content = `${m.content}\n-# (${decrypted})`;
-                    }
-                }
-            }
-        });
+        event.messages.forEach(processMessage);
     }
 }
 
 const patches: any[] = [];
 
-export const onLoad = () => {
-    try {
-        if (!v || !v.metro) return;
-        const { metro } = v;
+export default {
+    onLoad: () => {
+        try {
+            if (!v || !v.metro) return;
+            const { metro, plugin } = v;
 
-        // FluxDispatcher'ı en güvenli yoldan bul
-        const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
-        
-        if (FluxDispatcher) {
-            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            
-            patches.push(() => {
-                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
-                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
-                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            });
+            // Varsayılan ayar
+            if (plugin.storage.autoDecrypt === undefined) plugin.storage.autoDecrypt = true;
+
+            // 1. Yöntem: FluxDispatcher (Gelen mesaj anında)
+            const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
+            if (FluxDispatcher) {
+                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessageEvent);
+                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessageEvent);
+                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+                
+                patches.push(() => {
+                    FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessageEvent);
+                    FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessageEvent);
+                    FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
+                });
+            }
+
+            // 2. Yöntem: MessageStore Yaması (Garantici yöntem)
+            const MessageStore = metro.findByProps("getMessage", "getMessages");
+            if (MessageStore && v.patcher) {
+                patches.push(v.patcher.after("getMessage", MessageStore, (args: any, res: any) => {
+                    if (res) processMessage(res);
+                }));
+            }
+        } catch (e) {
+            console.error("[SecretMessage] onLoad Error:", e);
         }
-    } catch (e) {
-        console.error("[SecretMessage] Error:", e);
+    },
+
+    onUnload: () => {
+        try {
+            for (const unpatch of patches) {
+                if (typeof unpatch === "function") unpatch();
+            }
+            patches.length = 0;
+        } catch (e) {}
+    },
+
+    // Bunny ayarlar menüsü için toggle ekle
+    settings: () => {
+        return {
+            autoDecrypt: {
+                label: "Otomatik Çeviri",
+                type: "toggle",
+                default: true
+            }
+        };
     }
-};
-
-export const onUnload = () => {
-    try {
-        for (const unpatch of patches) {
-            if (typeof unpatch === "function") unpatch();
-        }
-        patches.length = 0;
-    } catch (e) {}
 };
