@@ -14,17 +14,6 @@ function toBase64Url(str: string): string {
     } catch (e) { return ""; }
 }
 
-function fromBase64Url(str: string): string {
-    try {
-        let s = str.replace(/-/g, "+").replace(/_/g, "/");
-        while (s.length % 4) s += "=";
-        const binary = atob(s);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return new TextDecoder().decode(bytes);
-    } catch (e) { return ""; }
-}
-
 function xorEncryptDecrypt(text: string, key: string): string {
     let result = "";
     for (let i = 0; i < text.length; i++) {
@@ -37,87 +26,40 @@ function encryptMessage(text: string): string {
     return X1 + toBase64Url(xorEncryptDecrypt(text, X2));
 }
 
-function decryptMessage(text: string): string {
-    if (!text || typeof text !== "string" || !text.startsWith(X1)) return text;
-    try {
-        const encryptedPart = text.slice(X1.length);
-        if (!encryptedPart) return text;
-        return xorEncryptDecrypt(fromBase64Url(encryptedPart), X2);
-    } catch {
-        return text;
-    }
-}
-
 const patches: any[] = [];
-
-function handleMessage(event: any) {
-    const msg = event?.message;
-    if (msg && typeof msg.content === "string" && msg.content.startsWith(X1)) {
-        if (!msg.content.includes("\n-# (")) {
-            const decrypted = decryptMessage(msg.content);
-            if (decrypted !== msg.content) {
-                msg.content = `${msg.content}\n-# (${decrypted})`;
-            }
-        }
-    }
-}
-
-function handleLoadMessages(event: any) {
-    if (Array.isArray(event?.messages)) {
-        event.messages.forEach((m: any) => {
-            if (m && typeof m.content === "string" && m.content.startsWith(X1)) {
-                if (!m.content.includes("\n-# (")) {
-                    const decrypted = decryptMessage(m.content);
-                    if (decrypted !== m.content) {
-                        m.content = `${m.content}\n-# (${decrypted})`;
-                    }
-                }
-            }
-        });
-    }
-}
 
 export const onLoad = () => {
     try {
-        // Mesaj Gönderme ve Düzenleme Yaması
+        // En yaygın mesaj gönderme modülleri
         const Messages = findByProps("sendMessage", "receiveMessage");
-        if (Messages) {
-            patches.push(before("sendMessage", Messages, (args) => {
-                const content = args[1]?.content;
-                if (typeof content === "string" && content.startsWith("*")) {
-                    args[1].content = encryptMessage(content.slice(1));
-                }
-            }));
-            patches.push(before("editMessage", Messages, (args) => {
-                const content = args[2]?.content;
-                if (typeof content === "string" && content.startsWith("*")) {
-                    args[2].content = encryptMessage(content.slice(1));
-                }
-            }));
-        }
+        const MessageActions = findByProps("sendBotMessage", "sendMessage");
+        
+        const patchSendMessage = (module: any) => {
+            if (module) {
+                patches.push(before("sendMessage", module, (args) => {
+                    const content = args[1]?.content || args[1];
+                    if (typeof content === "string" && content.startsWith("*")) {
+                        if (typeof args[1] === "string") {
+                            args[1] = encryptMessage(content.slice(1));
+                        } else {
+                            args[1].content = encryptMessage(content.slice(1));
+                        }
+                    }
+                }));
+            }
+        };
 
-        // Gelen Mesajları Çözme (FluxDispatcher)
-        const FluxDispatcher = findByProps("dispatch", "subscribe");
-        if (FluxDispatcher) {
-            FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
-            FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
-            FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            
-            // Unsubscribe fonksiyonunu patches'e ekle
-            patches.push(() => {
-                FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
-                FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
-                FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-            });
-        }
+        patchSendMessage(Messages);
+        patchSendMessage(MessageActions);
+
     } catch (e) {
-        console.error("[SecretMessage] Error:", e);
+        console.error("[SecretMessage] onLoad Error:", e);
     }
 };
 
 export const onUnload = () => {
-    for (const unpatch of patches) {
-        try { unpatch(); } catch (e) {}
-    }
-    patches.length = 0;
+    try {
+        for (const unpatch of patches) unpatch?.();
+        patches.length = 0;
+    } catch (e) {}
 };
