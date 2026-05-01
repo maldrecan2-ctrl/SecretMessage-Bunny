@@ -1,6 +1,5 @@
 // @ts-ignore
 const v = (window as any).vendetta;
-const { metro, patcher, plugin } = v;
 
 // ── Şifreleme Sabitleri ─────────────────────────────────────────────────────
 const X1 = "krd";
@@ -39,62 +38,54 @@ function processMessage(msg: any) {
         if (!msg.content.includes("\n-# (")) {
             const decrypted = decryptMessage(msg.content);
             if (decrypted !== msg.content) {
-                msg.content = `${msg.content}\n-# (${decrypted})`;
+                try {
+                    // Mesaj kilitli (frozen) ise hata fırlatabilir, try-catch içinde yapıyoruz
+                    msg.content = `${msg.content}\n-# (${decrypted})`;
+                } catch (e) {
+                    // Eğer kilitliyse yeni bir içerik objesi atamaya çalış (nadiren çalışır ama güvenlidir)
+                    console.error("[SecretMessage] Mesaj kilitli, çözülemedi:", e);
+                }
             }
         }
     }
 }
 
-const handleMessageEvent = (event: any) => processMessage(event?.message || event?.msg);
-const handleLoadMessages = (event: any) => { if (Array.isArray(event?.messages)) event.messages.forEach(processMessage); };
-
 const patches: any[] = [];
-
-// ── Ayarlar Sayfası (React Component) ───────────────────────────────────────
-function Settings() {
-    const { React, common } = metro;
-    const { storage } = plugin;
-    // Bunny'nin hazır komponentlerini kullan
-    const { Forms } = v.ui.components;
-    
-    if (!Forms || !Forms.FormSwitchRow) return null;
-
-    const [autoDecrypt, setAutoDecrypt] = React.useState(storage.autoDecrypt !== false);
-
-    return React.createElement(Forms.FormSwitchRow, {
-        label: "Otomatik Çeviri",
-        subLabel: "Gelen şifreli mesajları otomatik olarak altına çevirir.",
-        value: autoDecrypt,
-        onValueChange: (val: boolean) => {
-            storage.autoDecrypt = val;
-            setAutoDecrypt(val);
-        }
-    });
-}
 
 export default {
     onLoad: () => {
         try {
-            if (plugin.storage.autoDecrypt === undefined) plugin.storage.autoDecrypt = true;
+            if (!v || !v.metro || !v.patcher) return;
+            const { metro, patcher } = v;
 
-            const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
-            if (FluxDispatcher) {
-                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessageEvent);
-                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessageEvent);
-                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-                
-                patches.push(() => {
-                    FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessageEvent);
-                    FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessageEvent);
-                    FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoadMessages);
-                });
+            // 1. YÖNTEM: Mesajlar cihaza inerken (receiveMessage) yakala
+            const Messages = metro.findByProps("receiveMessage");
+            if (Messages && Messages.receiveMessage) {
+                patches.push(patcher.before("receiveMessage", Messages, (args: any) => {
+                    // args[0] channelId, args[1] message object
+                    if (args && args[1]) {
+                        processMessage(args[1]);
+                    }
+                }));
             }
 
-            const MessageStore = metro.findByProps("getMessage", "getMessages");
-            if (MessageStore && patcher) {
-                patches.push(patcher.after("getMessage", MessageStore, (args: any, res: any) => {
-                    if (res && plugin.storage.autoDecrypt !== false) processMessage(res);
-                }));
+            // 2. YÖNTEM: FluxDispatcher (Geçmiş mesajlar ve alternatif yakalama)
+            const FluxDispatcher = metro.common?.FluxDispatcher || metro.findByProps("dispatch", "subscribe");
+            if (FluxDispatcher) {
+                const handleMessage = (event: any) => processMessage(event?.message || event?.msg);
+                const handleLoad = (event: any) => {
+                    if (Array.isArray(event?.messages)) event.messages.forEach(processMessage);
+                };
+
+                FluxDispatcher.subscribe("MESSAGE_CREATE", handleMessage);
+                FluxDispatcher.subscribe("MESSAGE_UPDATE", handleMessage);
+                FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", handleLoad);
+                
+                patches.push(() => {
+                    FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessage);
+                    FluxDispatcher.unsubscribe("MESSAGE_UPDATE", handleMessage);
+                    FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", handleLoad);
+                });
             }
         } catch (e) {
             console.error("[SecretMessage] onLoad Error:", e);
@@ -102,9 +93,11 @@ export default {
     },
 
     onUnload: () => {
-        for (const unpatch of patches) if (typeof unpatch === "function") unpatch();
-        patches.length = 0;
-    },
-
-    settings: Settings
+        try {
+            for (const unpatch of patches) {
+                if (typeof unpatch === "function") unpatch();
+            }
+            patches.length = 0;
+        } catch (e) {}
+    }
 };
